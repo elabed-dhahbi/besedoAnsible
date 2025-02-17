@@ -1,0 +1,166 @@
+---
+- name: DevOps/SRE Provisioning Playbook
+  hosts: all
+  become: yes
+  vars:
+    encryption_key: "SuperSecretKey123!"  # Define encryption key
+    container_count: 4
+    default_container_name: docker
+    default_container_image: ubuntu
+    default_container_command: sleep 1d
+    users:
+      jane.doe:
+        name: "Jane DOE"
+        position: "Software Engineer"
+        office: "London"
+        login: "jane.doe"
+        passwd: "Bv3h!p2DqP%Q"
+        groups: ["sudo", "developers", "docker"]
+        ssh_keys:
+          - "ssh-rsa AAAAB3Nza...JanePublicKey..."
+      john.smith:
+        name: "John SMITH"
+        position: "Systems Administrator"
+        office: "New York"
+        login: "john.smith"
+        passwd: "Zm9c&NvV7LbA"
+        groups: ["sudo", "it", "docker"]
+        ssh_keys:
+          - "ssh-rsa AAAAB3Nza...JohnPublicKey..."
+      alice.williams:
+        name: "Alice WILLIAMS"
+        position: "DevOps Engineer"
+        office: "Berlin"
+        login: "alice.williams"
+        passwd: "Tq7d#3BpO1pN"
+        groups: ["sudo", "infra", "docker"]
+        ssh_keys:
+          - "ssh-rsa AAAAB3Nza...AlicePublicKey..."
+
+  tasks:
+    - name: Set system open file limit
+      pam_limits:
+        domain: root
+        limit_type: soft
+        limit_item: nofile
+        value: 65536
+
+    - name: Ensure required groups exist
+      group:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - developers
+        - it
+        - infra
+        - docker
+
+    - name: Wait for apt lock to be released
+      shell: "while sudo fuser /var/lib/dpkg/lock >/dev/null 2>&1; do sleep 5; done;"
+      changed_when: false
+
+    - name: Install required system packages
+      apt:
+        pkg:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - software-properties-common
+          - python3-pip
+          - virtualenv
+          - python3-setuptools
+        state: latest
+        update_cache: true
+      retries: 5
+      delay: 10
+      register: apt_result
+      until: apt_result is succeeded
+
+    - name: Add Docker GPG apt Key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add Docker Repository
+      apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu focal stable"
+        state: present
+
+    - name: Update apt and install Docker
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: latest
+        update_cache: true
+      retries: 5
+      delay: 10
+      register: docker_result
+      until: docker_result is succeeded
+
+    - name: Ensure Docker group exists
+      group:
+        name: docker
+        state: present
+
+    - name: Restart systemd to apply changes
+      systemd:
+        daemon_reload: yes
+
+    - name: Start Docker service
+      service:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Pull default Docker image
+      community.docker.docker_image:
+        name: "{{ default_container_image }}"
+        source: pull
+
+    - name: Create default containers
+      community.docker.docker_container:
+        name: "{{ default_container_name }}{{ item }}"
+        image: "{{ default_container_image }}"
+        command: "{{ default_container_command }}"
+        state: present
+      with_sequence: count={{ container_count }}
+
+    - name: Download prrtprrt.txt
+      get_url:
+        url: "https://gist.githubusercontent.com/slgevens/aa9a2fc52cb5fef8b41c1b11a8b7d3e3/raw/dc1e3e288967bd4818277e4688d1daf615225337/prrtprrt.txt"
+        dest: "/tmp/prrtprrt.txt"
+
+    - name: Copy prrtprrt.txt to users' home directories
+      copy:
+        src: "/tmp/prrtprrt.txt"
+        dest: "/home/{{ item.value.login }}/prrtprrt.txt"
+        remote_src: yes
+      loop: "{{ users | dict2items }}"
+
+    - name: Copy prrtprrt.txt locally
+      fetch:
+        src: "/tmp/prrtprrt.txt"
+        dest: "{{ playbook_dir }}/files/prrtprrt.txt"
+        flat: yes
+
+    - name: Install Nginx
+      package:
+        name: nginx
+        state: present
+
+    - name: Configure Nginx to forward requests to happy_roentgen
+      template:
+        src: nginx.conf.j2
+        dest: /etc/nginx/nginx.conf
+      notify:
+        - Restart Nginx
+
+  handlers:
+    - name: Restart Nginx
+      service:
+        name: nginx
+        state: restarted
